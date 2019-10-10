@@ -1,6 +1,5 @@
-use super::gpio;
-use super::MMIO_BASE;
-use crate::interface::console;
+use super::super::NullLock;
+use crate::interface;
 use core::fmt;
 use core::ops;
 use cortex_a::asm;
@@ -74,8 +73,6 @@ register_bitfields! {
     ]
 }
 
-const MINI_UART_BASE: u32 = MMIO_BASE + 0x0021_5000;
-
 #[allow(non_snake_case)]
 #[repr(C)]
 pub struct RegisterBlock {
@@ -94,26 +91,32 @@ pub struct RegisterBlock {
     AUX_MU_BAUD: WriteOnly<u32, AUX_MU_BAUD::Register>, // 0x68
 }
 
-pub struct MiniUart;
+pub struct MiniUartInner {
+    base_addr: usize,
+    chars_written: usize,
+}
 
-impl ops::Deref for MiniUart {
+impl ops::Deref for MiniUartInner {
     type Target = RegisterBlock;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*Self::ptr() }
+        unsafe { &*self.ptr() }
     }
 }
 
-impl MiniUart {
-    pub fn new() -> MiniUart {
-        MiniUart
+impl MiniUartInner {
+    const fn new(base_addr: usize) -> MiniUartInner {
+        MiniUartInner {
+            base_addr,
+            chars_written: 0,
+        }
     }
 
-    fn ptr() -> *const RegisterBlock {
-        MINI_UART_BASE as *const _
+    fn ptr(&self) -> *const RegisterBlock {
+        self.base_addr as *const _
     }
 
-    pub fn init(&self) {
+    fn init(&self) -> interface::driver::Result {
         // initialize UART
         self.AUX_ENABLES.modify(AUX_ENABLES::MINI_UART_ENABLE::SET);
         self.AUX_MU_IER.set(0);
@@ -124,30 +127,15 @@ impl MiniUart {
         self.AUX_MU_IIR.write(AUX_MU_IIR::FIFO_CLEAR::All);
         self.AUX_MU_BAUD.write(AUX_MU_BAUD::RATE.val(270)); // 115200 baud
 
-        // map UART1 to GPIO pins
-        unsafe {
-            (*gpio::GPFSEL1).modify(gpio::GPFSEL1::FSEL14::TXD1 + gpio::GPFSEL1::FSEL15::RXD1);
-
-            (*gpio::GPPUD).set(0); // enable pins 14 and 15
-            for _ in 0..150 {
-                asm::nop();
-            }
-
-            (*gpio::GPPUDCLK0).write(
-                gpio::GPPUDCLK0::PUDCLK14::AssertClock + gpio::GPPUDCLK0::PUDCLK15::AssertClock,
-            );
-            for _ in 0..150 {
-                asm::nop();
-            }
-
-            (*gpio::GPPUDCLK0).set(0);
-        }
-
         self.AUX_MU_CNTL
             .write(AUX_MU_CNTL::RX_EN::Enabled + AUX_MU_CNTL::TX_EN::Enabled);
+
+        self.AUX_MU_IIR.write(AUX_MU_IIR::FIFO_CLEAR::All);
+
+        Ok(())
     }
 
-    pub fn send(&self, c: char) {
+    fn write_char(&mut self, c: char) {
         loop {
             if self.AUX_MU_LSR.is_set(AUX_MU_LSR::TX_EMPTY) {
                 break;
@@ -159,7 +147,7 @@ impl MiniUart {
         self.AUX_MU_IO.set(c as u32);
     }
 
-    pub fn getc(&self) -> char {
+    fn getc(&self) -> char {
         loop {
             if self.AUX_MU_LSR.is_set(AUX_MU_LSR::DATA_READY) {
                 break;
@@ -176,47 +164,69 @@ impl MiniUart {
 
         ret
     }
-
-    pub fn puts(&self, string: &str) {
-        for c in string.chars() {
-            if c == '\n' {
-                self.send('\r')
-            }
-
-            self.send(c);
-        }
-    }
-
-    pub fn hex(&self, d: u32) {
-        let mut n;
-
-        for i in 0..8 {
-            //get highest tetrad
-            n = d.wrapping_shr(28 - i * 4) & 0xF;
-
-            // 0-9 => '0'-'9', 10-15 => 'A'-'F'
-            // Add proper offset for ASCII table
-            if n > 9 {
-                n += 0x37;
-            } else {
-                n += 0x30;
-            }
-
-            self.send(n as u8 as char);
-        }
-    }
 }
 
-impl console::Write for MiniUart {
+impl fmt::Write for MiniUartInner {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.puts(s);
+        for c in s.chars() {
+            if c == '\n' {
+                self.write_char('\r');
+            }
+
+            self.write_char(c);
+        }
+
+        self.chars_written += s.len();
 
         Ok(())
     }
 }
 
-impl console::Read for MiniUart {
-    fn read_char(&mut self) -> char {
-        self.getc()
+////////////////////////////////////////////////////////////////////////////////
+// OS interface implementations
+////////////////////////////////////////////////////////////////////////////////
+
+pub struct MiniUart {
+    inner: NullLock<MiniUartInner>,
+}
+
+impl MiniUart {
+    pub const unsafe fn new(base_addr: usize) -> MiniUart {
+        MiniUart {
+            inner: NullLock::new(MiniUartInner::new(base_addr)),
+        }
+    }
+}
+
+impl interface::driver::DeviceDriver for MiniUart {
+    fn compatible(&self) -> &str {
+        "MiniUart"
+    }
+
+    fn init(&self) -> interface::driver::Result {
+        use interface::sync::Mutex;
+
+        let mut r = &self.inner;
+        r.lock(|i| i.init())
+    }
+}
+
+impl interface::console::Write for MiniUart {
+    fn write_fmt(&self, args: core::fmt::Arguments) -> fmt::Result {
+        use interface::sync::Mutex;
+
+        let mut r = &self.inner;
+        r.lock(|i| fmt::Write::write_fmt(i, args))
+    }
+}
+
+impl interface::console::Read for MiniUart {}
+
+impl interface::console::Statistics for MiniUart {
+    fn chars_written(&self) -> usize {
+        use interface::sync::Mutex;
+
+        let mut r = &self.inner;
+        r.lock(|i| i.chars_written)
     }
 }

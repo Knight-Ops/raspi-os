@@ -1,7 +1,7 @@
+use super::super::NullLock;
 use super::gpio;
 use super::mbox::{Clocks, Mbox};
-use super::MMIO_BASE;
-use crate::interface::console;
+use crate::interface;
 use core::fmt;
 use core::ops;
 use cortex_a::asm;
@@ -88,8 +88,6 @@ register_bitfields! {
     ]
 }
 
-const UART_BASE: u32 = MMIO_BASE + 0x20_1000;
-
 //TODO this needs to be completely filled out
 #[allow(non_snake_case)]
 #[repr(C)]
@@ -113,48 +111,35 @@ pub enum UartError {
 }
 pub type Result<T> = ::core::result::Result<T, UartError>;
 
-pub struct Uart;
+pub struct UartInner {
+    base_addr: usize,
+    chars_written: usize,
+}
 
-impl ops::Deref for Uart {
+impl ops::Deref for UartInner {
     type Target = RegisterBlock;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*Self::ptr() }
+        unsafe { &*self.ptr() }
     }
 }
 
-impl Uart {
-    pub fn new() -> Uart {
-        Uart
+impl UartInner {
+    const fn new(base_addr: usize) -> UartInner {
+        UartInner {
+            base_addr,
+            chars_written: 0,
+        }
     }
 
-    fn ptr() -> *const RegisterBlock {
-        UART_BASE as *const _
+    fn ptr(&self) -> *const RegisterBlock {
+        self.base_addr as *const _
     }
 
-    pub fn init(&self, mbox: &mut Mbox, clock_speed: u32) -> Result<()> {
+    fn init(&self, mbox: &mut Mbox, clock_speed: u32) -> interface::driver::Result {
         self.CR.set(0);
 
         mbox.set_clock_rate(Clocks::UART, clock_speed, 0);
-
-        // map UART0 to GPIO pins
-        unsafe {
-            (*gpio::GPFSEL1).modify(gpio::GPFSEL1::FSEL14::TXD0 + gpio::GPFSEL1::FSEL15::RXD0);
-
-            (*gpio::GPPUD).set(0); // enable pins 14 and 15
-            for _ in 0..150 {
-                asm::nop();
-            }
-
-            (*gpio::GPPUDCLK0).write(
-                gpio::GPPUDCLK0::PUDCLK14::AssertClock + gpio::GPPUDCLK0::PUDCLK15::AssertClock,
-            );
-            for _ in 0..150 {
-                asm::nop();
-            }
-
-            (*gpio::GPPUDCLK0).set(0);
-        }
 
         self.ICR.write(ICR::ALL::CLEAR);
         self.IBRD.write(IBRD::IBRD.val(2));
@@ -167,7 +152,7 @@ impl Uart {
     }
 
     /// Send a character
-    pub fn send(&self, c: char) {
+    fn write_char(&self, c: char) {
         // wait until we can send
         loop {
             if !self.FR.is_set(FR::TXFF) {
@@ -182,7 +167,7 @@ impl Uart {
     }
 
     /// Receive a character
-    pub fn getc(&self) -> char {
+    fn getc(&self) -> char {
         // wait until something is in the buffer
         loop {
             if !self.FR.is_set(FR::RXFE) {
@@ -202,50 +187,69 @@ impl Uart {
 
         ret
     }
-
-    /// Display a string
-    pub fn puts(&self, string: &str) {
-        for c in string.chars() {
-            // convert newline to carrige return + newline
-            if c == '\n' {
-                self.send('\r')
-            }
-
-            self.send(c);
-        }
-    }
-
-    /// Display a binary value in hexadecimal
-    pub fn hex(&self, d: u32) {
-        let mut n;
-
-        for i in 0..8 {
-            // get highest tetrad
-            n = d.wrapping_shr(28 - i * 4) & 0xF;
-
-            // 0-9 => '0'-'9', 10-15 => 'A'-'F'
-            // Add proper offset for ASCII table
-            if n > 9 {
-                n += 0x37;
-            } else {
-                n += 0x30;
-            }
-
-            self.send(n as u8 as char);
-        }
-    }
 }
 
-impl console::Write for Uart {
+impl fmt::Write for UartInner {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.puts(s);
+        for c in s.chars() {
+            if c == '\n' {
+                self.write_char('\r');
+            }
+
+            self.write_char(c);
+        }
+
+        self.chars_written += s.len();
 
         Ok(())
     }
 }
 
-impl console::Read for Uart {
-    fn read_char(&mut self) -> char {
-        self.getc()
+////////////////////////////////////////////////////////////////////////////////
+// OS interface implementations
+////////////////////////////////////////////////////////////////////////////////
+
+pub struct Uart {
+    inner: NullLock<UartInner>,
+}
+
+impl Uart {
+    pub const unsafe fn new(base_addr: usize) -> Uart {
+        Uart {
+            inner: NullLock::new(UartInner::new(base_addr)),
+        }
+    }
+}
+
+impl interface::driver::DeviceDriver for Uart {
+    fn compatible(&self) -> &str {
+        "Uart"
+    }
+
+    fn init(&self) -> interface::driver::Result {
+        use interface::sync::Mutex;
+
+        let mut r = &self.inner;
+        r.lock(|i| i.init())
+    }
+}
+
+impl interface::console::Write for Uart {
+    fn write_fmt(&self, args: core::fmt::Arguments) -> fmt::Result {
+        use interface::sync::Mutex;
+
+        let mut r = &self.inner;
+        r.lock(|i| fmt::Write::write_fmt(i, args))
+    }
+}
+
+impl interface::console::Read for Uart {}
+
+impl interface::console::Statistics for Uart {
+    fn chars_written(&self) -> usize {
+        use interface::sync::Mutex;
+
+        let mut r = &self.inner;
+        r.lock(|i| i.chars_written)
     }
 }

@@ -1,22 +1,24 @@
 //! Board Support Package for the Raspberry Pi 3.
 
+// mod gpio;
+// mod uart0;
+// pub use uart0::Uart;
+// mod uart1;
+// pub use uart1::MiniUart;
+// pub mod mbox;
+
+mod driver;
+mod memory_map;
 mod panic_wait;
+mod sync;
+use sync::NullLock;
 
-const MMIO_BASE: u32 = 0x3F00_0000;
-
-mod gpio;
-mod uart0;
-pub use uart0::Uart;
-mod uart1;
-pub use uart1::MiniUart;
-pub mod mbox;
-
-use crate::interface::console;
-use core::fmt;
+use crate::interface;
+use core::sync::atomic::{compiler_fence, Ordering};
 use cortex_a::{asm, regs::*};
 
-use lazy_static::lazy_static;
-use spin::Mutex;
+// use lazy_static::lazy_static;
+// use spin::Mutex;
 
 /// The entry of the `kernel` binary.
 ///
@@ -36,7 +38,18 @@ pub unsafe extern "C" fn _start() -> ! {
 
     if CORE_0 == MPIDR_EL1.get() & CORE_MASK {
         SP.set(STACK_START);
-        runtime_init::init()
+
+        compiler_fence(Ordering::SeqCst);
+
+        // This is a hack to not drop back into assembly. Without this get, the compiler fence was not properly
+        // preventing stack allocations prior to the stack being set up.
+        if SP.get() != 0 {
+            runtime_init::init()
+        } else {
+            loop {
+                asm::wfe();
+            }
+        }
     } else {
         // if not core0, infinitely wait for events
         loop {
@@ -46,26 +59,24 @@ pub unsafe extern "C" fn _start() -> ! {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Global BSP driver instances
+////////////////////////////////////////////////////////////////////////////////
+
+static GPIO: driver::GPIO = unsafe { driver::GPIO::new(memory_map::mmio::GPIO_BASE) };
+static MINI_UART: driver::MiniUart =
+    unsafe { driver::MiniUart::new(memory_map::mmio::MiniUart_BASE) };
+// static UART_0: driver::Uart = unsafe { driver::Uart::new(memory_map::mmio::Uart_BASE) };
+// static MBOX: driver::Mbox = unsafe { driver::MBOX::New(memory_map::mmio::VIDEOCORE_MBOX) };
+
+////////////////////////////////////////////////////////////////////////////////
 // Implementation of the kernel's BSP calls
 ////////////////////////////////////////////////////////////////////////////////
 
-lazy_static! {
-    pub static ref CONSOLE: Mutex<Uart> = {
-        let mut uart = Uart::new();
-        let mut mbox = mbox::Mbox::new();
-        {
-            uart.init(&mut mbox, 4_000_000);
-        }
-
-        Mutex::new(uart)
-    };
+// Returns a ready-to-use `console::Write` implementation.
+pub fn console() -> &'static impl interface::console::All {
+    &MINI_UART
 }
 
-/// Returns a ready-to-use `console::Write` implementation.
-// This is a terrible implementation, we should have to re-init each time we need this
-pub fn console() -> impl console::Write {
-    let console = MiniUart::new();
-    console.init();
-
-    console
+pub fn device_drivers() -> [&'static dyn interface::driver::DeviceDriver; 2] {
+    [&GPIO, &MINI_UART]
 }

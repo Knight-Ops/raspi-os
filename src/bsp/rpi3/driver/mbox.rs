@@ -1,4 +1,5 @@
-use super::MMIO_BASE;
+use super::super::NullLock;
+use crate::interface;
 use core::ops;
 use core::sync::atomic::{compiler_fence, Ordering};
 use cortex_a::asm;
@@ -15,8 +16,6 @@ register_bitfields! {
         EMPTY OFFSET(30) NUMBITS(1) []
     ]
 }
-
-const VIDEOCORE_MBOX: u32 = MMIO_BASE + 0xB880;
 
 #[allow(non_snake_case)]
 #[repr(C)]

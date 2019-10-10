@@ -1,3 +1,5 @@
+ENTRY(_start)
+
 SECTIONS
 {
     /* Set current address to the value from which the RPi4 starts execution */
@@ -10,12 +12,17 @@ SECTIONS
 
     .rodata :
     {
-        *(.rodata)
+        *(.rodata .rodata.*)
+    }
+
+    .got :
+    {
+        *(.got .got.*)
     }
 
     .data :
     {
-        *(.data)
+        *(.data .data.*)
     }
 
     /*Align to 8 byte boundary */
