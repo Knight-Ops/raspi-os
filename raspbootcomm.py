@@ -74,14 +74,13 @@ def main():
         listenForOk(ser)
         sendKernel(ser, kernel, kernelSize)
 
-        data = b''
-        while True:
-            if ser.in_waiting > 0:
-                data += ser.read(1)
+        # data = b''
+        # while True:
+        #     if ser.in_waiting > 0:
+        #         data += ser.read(ser.in_waiting)
+        #         print(data, end='\r')
 
-            print("{}".format(data) , end='\r')
-            # with open('test.img', 'wb') as w:
-            #     w.write(data)
+    print("Kernel Loaded.")
         
 
 if __name__ == "__main__":

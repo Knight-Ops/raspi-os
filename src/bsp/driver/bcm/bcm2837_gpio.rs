@@ -1,7 +1,5 @@
-use super::super::NullLock;
-use crate::interface;
+use crate::{arch, arch::sync::NullLock, interface};
 use core::ops;
-use cortex_a::asm;
 use register::{mmio::ReadWrite, register_bitfields};
 
 register_bitfields! {
@@ -100,31 +98,31 @@ impl GPIOInner {
         // Enable pins 14 and 15.
         self.GPPUD.set(0);
         for _ in 0..150 {
-            asm::nop();
+            arch::nop();
         }
 
         self.GPPUDCLK0
             .write(GPPUDCLK0::PUDCLK14::AssertClock + GPPUDCLK0::PUDCLK15::AssertClock);
         for _ in 0..150 {
-            asm::nop();
+            arch::nop();
         }
 
         self.GPPUDCLK0.set(0);
     }
 
-    fn map_uart_0(&mut self) {
+    fn map_uart0(&mut self) {
         self.GPFSEL1
             .modify(GPFSEL1::FSEL14::TXD0 + GPFSEL1::FSEL15::RXD0);
 
         self.GPPUD.set(0);
         for _ in 0..150 {
-            asm::nop();
+            arch::nop();
         }
 
         self.GPPUDCLK0
             .write(GPPUDCLK0::PUDCLK14::AssertClock + GPPUDCLK0::PUDCLK15::AssertClock);
         for _ in 0..150 {
-            asm::nop();
+            arch::nop();
         }
 
         self.GPPUDCLK0.set(0);
@@ -134,6 +132,7 @@ impl GPIOInner {
 ////////////////////////////////////////////////////////////////////////////////
 // OS interface implementations
 ////////////////////////////////////////////////////////////////////////////////
+use interface::sync::Mutex;
 
 pub struct GPIO {
     inner: NullLock<GPIOInner>,
@@ -145,19 +144,22 @@ impl GPIO {
             inner: NullLock::new(GPIOInner::new(base_addr)),
         }
     }
+
+    pub fn map_mini_uart(&self) {
+        let mut r = &self.inner;
+        r.lock(|inner| inner.map_mini_uart());
+    }
+
+    pub fn map_uart0(&self) {
+        let mut r = &self.inner;
+        r.lock(|inner| inner.map_uart0());
+    }
 }
 
 impl interface::driver::DeviceDriver for GPIO {
     fn compatible(&self) -> &str {
-        "GPIO"
+        "BCM2837 GPIO"
     }
 
-    fn init(&self) -> interface::driver::Result {
-        use interface::sync::Mutex;
-
-        let mut r = &self.inner;
-        r.lock(|i| i.map_mini_uart());
-
-        Ok(())
-    }
+    // Use default init()
 }

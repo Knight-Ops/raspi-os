@@ -23,6 +23,7 @@ pub mod console {
     /// implementing `console::Write` gives a better hint to the reader about
     /// the intention.
     pub trait Write {
+        fn write_char(&self, c: char);
         fn write_fmt(&self, args: fmt::Arguments) -> fmt::Result;
     }
 

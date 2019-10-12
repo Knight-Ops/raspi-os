@@ -1,3 +1,5 @@
+mod driver;
+
 #[cfg(feature = "bsp_rpi3")]
 pub mod rpi3;
 #[cfg(feature = "bsp_rpi3")]

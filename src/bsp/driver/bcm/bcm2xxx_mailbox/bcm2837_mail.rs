@@ -1,40 +1,10 @@
-use super::super::NullLock;
-use crate::interface;
+use crate::bsp::mailbox;
+use crate::{arch, arch::sync::NullLock, interface};
 use core::ops;
 use core::sync::atomic::{compiler_fence, Ordering};
-use cortex_a::asm;
-use register::{
-    mmio::{ReadOnly, WriteOnly},
-    register_bitfields,
-};
 
-register_bitfields! {
-    u32,
-
-    STATUS [
-        FULL  OFFSET(31) NUMBITS(1) [],
-        EMPTY OFFSET(30) NUMBITS(1) []
-    ]
-}
-
-#[allow(non_snake_case)]
-#[repr(C)]
-pub struct RegisterBlock {
-    READ: [ReadOnly<u32>; 4],                // 0x00
-    PEEK: ReadOnly<u32>,                     // 0x10
-    SENDER: ReadOnly<u32>,                   // 0x14
-    STATUS: ReadOnly<u32, STATUS::Register>, // 0x18
-    CONFIG: ReadOnly<u32>,                   // 0x1C
-    WRITE: [WriteOnly<u32>; 4],              // 0x20
-}
-
-// Custom errors
-#[derive(Debug)]
-pub enum MboxError {
-    ResponseError,
-    UnknownError,
-}
-pub type Result<T> = ::core::result::Result<T, MboxError>;
+use super::MboxError;
+type Result<T> = ::core::result::Result<T, MboxError>;
 
 // Channels
 #[derive(Clone, Copy)]
@@ -50,25 +20,6 @@ pub enum Channel {
     Count,
     ArmToVCProperty,
     VCToArmProperty,
-}
-
-// This is a hack because we are on no_std
-impl Channel {
-    fn from(value: u32) -> Channel {
-        match value {
-            0 => Channel::PowerManagement,
-            1 => Channel::Framebuffer,
-            2 => Channel::VirtualUART,
-            3 => Channel::VCHIQ,
-            4 => Channel::Leds,
-            5 => Channel::Buttons,
-            6 => Channel::TouchScreen,
-            7 => Channel::Count,
-            8 => Channel::ArmToVCProperty,
-            9 => Channel::VCToArmProperty,
-            _ => panic!("Channel does not exist in mailbox!"),
-        }
-    }
 }
 
 // Tags - Found https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface
@@ -196,23 +147,7 @@ pub enum Voltage {
     SDRAM_I = 4,
 }
 
-// Responses
-enum Response {
-    Success = 0x8000_0000,
-    Error = 0x8000_0001, // error parsing request buffer (partial response)
-    UnknownError = 0x0,
-}
-
-impl Response {
-    fn from(value: u32) -> Response {
-        match value {
-            0x8000_0000 => Response::Success,
-            0x8000_0001 => Response::Error,
-            _ => Response::UnknownError,
-        }
-    }
-}
-
+#[repr(u32)]
 pub enum Request {
     Request = 0,
 }
@@ -220,7 +155,7 @@ pub enum Request {
 // Public interface to the mailbox
 #[repr(C)]
 #[repr(align(16))]
-pub struct Mbox {
+pub struct Mail {
     // This is a really ugly solution to a Mailbox buffer
     // We probably should make this a structure, but we don't
     // have access to dynamically sized Vec, or Box with no_std
@@ -229,73 +164,9 @@ pub struct Mbox {
     pub buffer: [u32; 36],
 }
 
-/// Deref to RegisterBlock
-///
-/// Allows writing
-/// ```
-/// self.STATUS.read()
-/// ```
-/// instead of something along the lines of
-/// ```
-/// unsafe { (*Mbox::ptr()).STATUS.read() }
-/// ```
-impl ops::Deref for Mbox {
-    type Target = RegisterBlock;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*Self::ptr() }
-    }
-}
-
-impl Mbox {
-    pub fn new() -> Mbox {
-        Mbox { buffer: [0; 36] }
-    }
-
-    /// Returns a pointer to the register block
-    fn ptr() -> *const RegisterBlock {
-        VIDEOCORE_MBOX as *const _
-    }
-
-    /// Make a mailbox call. Returns Err(MboxError) on failure, Ok(()) success
-    pub fn call(&self, channel: Channel) -> Result<()> {
-        // wait until we can write to the mailbox
-        loop {
-            if !self.STATUS.is_set(STATUS::FULL) {
-                break;
-            }
-
-            asm::nop();
-        }
-
-        let buf_ptr = self.buffer.as_ptr() as u32;
-
-        // write the address of our message to the mailbox with channel identifier
-        self.WRITE[0].set((buf_ptr & !0xF) | ((channel as u32) & 0xF));
-
-        // now wait for the response
-        loop {
-            // is there a response?
-            loop {
-                if !self.STATUS.is_set(STATUS::EMPTY) {
-                    break;
-                }
-
-                asm::nop();
-            }
-
-            let resp: u32 = self.READ[0].get();
-
-            // is it a response to our message?
-            if ((resp & 0xF) == channel as u32) && ((resp & !0xF) == buf_ptr) {
-                // is it a valid successful response?
-                return match Response::from(self.buffer[1]) {
-                    Response::Success => Ok(()),
-                    Response::Error => Err(MboxError::ResponseError),
-                    Response::UnknownError => Err(MboxError::UnknownError),
-                };
-            }
-        }
+impl Mail {
+    pub fn new() -> Mail {
+        Mail { buffer: [0; 36] }
     }
 
     pub fn get_board_serial(&mut self) -> Result<u64> {
@@ -310,7 +181,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -331,7 +202,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -352,7 +223,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -373,7 +244,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -395,7 +266,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -418,7 +289,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -441,7 +312,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -468,7 +339,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -491,7 +362,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -513,7 +384,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -537,7 +408,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -560,7 +431,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -584,7 +455,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -607,7 +478,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {
@@ -637,7 +508,7 @@ impl Mbox {
 
         compiler_fence(Ordering::Release);
 
-        match self.call(Channel::ArmToVCProperty) {
+        match mailbox().call(self, Channel::ArmToVCProperty) {
             Err(MboxError::ResponseError) => Err(MboxError::ResponseError),
             Err(MboxError::UnknownError) => Err(MboxError::UnknownError),
             Ok(()) => {

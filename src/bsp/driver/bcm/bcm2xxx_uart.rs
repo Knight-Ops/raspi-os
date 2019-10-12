@@ -1,10 +1,8 @@
-use super::super::NullLock;
-use super::gpio;
-use super::mbox::{Clocks, Mbox};
-use crate::interface;
+use super::{Clocks, Mail};
+use crate::bsp;
+use crate::{arch, arch::sync::NullLock, interface};
 use core::fmt;
 use core::ops;
-use cortex_a::asm;
 use register::{mmio::*, register_bitfields};
 
 register_bitfields! {
@@ -92,7 +90,7 @@ register_bitfields! {
 #[allow(non_snake_case)]
 #[repr(C)]
 pub struct RegisterBlock {
-    DR: ReadWrite<u32, DR::Register>,         // 0x00
+    DR: ReadWrite<u32>,                       // 0x00
     RSRECR: ReadWrite<u32, RSRECR::Register>, // 0x04
     _reserved0: [u32; 4],                     // 0x08
     FR: ReadWrite<u32, FR::Register>,         // 0x18
@@ -109,9 +107,9 @@ pub struct RegisterBlock {
 pub enum UartError {
     MailboxError,
 }
-pub type Result<T> = ::core::result::Result<T, UartError>;
+type Result<T> = ::core::result::Result<T, UartError>;
 
-pub struct UartInner {
+struct UartInner {
     base_addr: usize,
     chars_written: usize,
 }
@@ -136,10 +134,14 @@ impl UartInner {
         self.base_addr as *const _
     }
 
-    fn init(&self, mbox: &mut Mbox, clock_speed: u32) -> interface::driver::Result {
+    fn init(&self, clock_speed: u32) -> interface::driver::Result {
         self.CR.set(0);
 
-        mbox.set_clock_rate(Clocks::UART, clock_speed, 0);
+        let mut mail = Mail::new();
+
+        if mail.set_clock_rate(Clocks::UART, clock_speed, 0).unwrap().1 != 4_000_000 {
+            arch::wait_forever();
+        }
 
         self.ICR.write(ICR::ALL::CLEAR);
         self.IBRD.write(IBRD::IBRD.val(2));
@@ -159,7 +161,7 @@ impl UartInner {
                 break;
             }
 
-            asm::nop();
+            arch::nop();
         }
 
         // write the character to the buffer
@@ -167,14 +169,14 @@ impl UartInner {
     }
 
     /// Receive a character
-    fn getc(&self) -> char {
+    fn read_char(&self) -> char {
         // wait until something is in the buffer
         loop {
             if !self.FR.is_set(FR::RXFE) {
                 break;
             }
 
-            asm::nop();
+            arch::nop();
         }
 
         // read it and return
@@ -208,6 +210,7 @@ impl fmt::Write for UartInner {
 ////////////////////////////////////////////////////////////////////////////////
 // OS interface implementations
 ////////////////////////////////////////////////////////////////////////////////
+use interface::sync::Mutex;
 
 pub struct Uart {
     inner: NullLock<UartInner>,
@@ -223,33 +226,37 @@ impl Uart {
 
 impl interface::driver::DeviceDriver for Uart {
     fn compatible(&self) -> &str {
-        "Uart"
+        "BCM2XXX UART"
     }
 
     fn init(&self) -> interface::driver::Result {
-        use interface::sync::Mutex;
-
         let mut r = &self.inner;
-        r.lock(|i| i.init())
+        r.lock(|inner| inner.init(4_000_000))
     }
 }
 
 impl interface::console::Write for Uart {
-    fn write_fmt(&self, args: core::fmt::Arguments) -> fmt::Result {
-        use interface::sync::Mutex;
-
+    fn write_char(&self, c: char) {
         let mut r = &self.inner;
-        r.lock(|i| fmt::Write::write_fmt(i, args))
+        r.lock(|inner| inner.write_char(c));
+    }
+
+    fn write_fmt(&self, args: core::fmt::Arguments) -> fmt::Result {
+        let mut r = &self.inner;
+        r.lock(|inner| fmt::Write::write_fmt(inner, args))
     }
 }
 
-impl interface::console::Read for Uart {}
+impl interface::console::Read for Uart {
+    fn read_char(&self) -> char {
+        let mut r = &self.inner;
+        r.lock(|inner| inner.read_char())
+    }
+}
 
 impl interface::console::Statistics for Uart {
     fn chars_written(&self) -> usize {
-        use interface::sync::Mutex;
-
         let mut r = &self.inner;
-        r.lock(|i| i.chars_written)
+        r.lock(|inner| inner.chars_written)
     }
 }
