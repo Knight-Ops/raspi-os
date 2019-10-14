@@ -22,6 +22,7 @@ static AUX_REGS: driver::AuxRegisters =
 static MINI_UART: driver::MiniUart = unsafe { driver::MiniUart::new(memory_map::mmio::UART1_BASE) };
 static MBOX: driver::Mbox = unsafe { driver::Mbox::new(memory_map::mmio::MAILBOX_BASE) };
 static UART0: driver::Uart = unsafe { driver::Uart::new(memory_map::mmio::UART0_BASE) };
+static RNG: driver::Rng = unsafe { driver::Rng::new(memory_map::mmio::RANDOM_BASE) };
 
 ////////////////////////////////////////////////////////////////////////////////
 // Implementation of the kernel's BSP calls
@@ -55,8 +56,12 @@ pub fn uart0() -> &'static impl interface::console::All {
     &UART0
 }
 
-pub fn device_drivers() -> [&'static dyn interface::driver::DeviceDriver; 5] {
-    [&GPIO, &AUX_REGS, &MINI_UART, &MBOX, &UART0]
+pub fn rand(min: usize, max: usize) -> usize {
+    RNG.rand(min, max)
+}
+
+pub fn device_drivers() -> [&'static dyn interface::driver::DeviceDriver; 6] {
+    [&GPIO, &AUX_REGS, &MINI_UART, &MBOX, &UART0, &RNG]
 }
 
 pub fn init() {
