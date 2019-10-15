@@ -3,6 +3,7 @@
 
 pub mod mmio {
     pub const BASE: usize = 0x3F00_0000;
+    pub const SYSTIMER_BASE: usize = BASE + 0x0000_3000;
     pub const TXP_BASE: usize = BASE + 0x0000_4000;
     pub const DMA_BASE: usize = BASE + 0x0000_7000;
     pub const INTERRUPT_CTRL_BASE: usize = BASE + 0x0000_B200;

@@ -23,7 +23,7 @@ pub unsafe extern "C" fn _start() -> ! {
         // This is a hack to not drop back into assembly. Without this get, the compiler fence was not properly
         // preventing stack allocations prior to the stack being set up.
         if SP.get() != 0 {
-            runtime_init::init()
+            crate::runtime_init::get().init();
         } else {
             wait_forever()
         }
@@ -39,7 +39,32 @@ pub unsafe extern "C" fn _start() -> ! {
 
 pub use asm::nop;
 
+/// Wait N microseconds
+pub fn wait_usec(n: usize) {
+    let frq = CNTFRQ_EL0.get() as usize;
+
+    // Calculate number of ticks
+    let tick_val = ((frq * n) / 1_000_000) as u32;
+
+    // Set the compare value register
+    CNTP_TVAL_EL0.set(tick_val);
+
+    // Kick off the counting                        // Disable timer interrupt
+    CNTP_CTL_EL0.modify(CNTP_CTL_EL0::ENABLE::SET + CNTP_CTL_EL0::IMASK::SET);
+
+    loop {
+        // ISTATUS will be one when cval ticks have passed. Continuously check it.
+        if CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::ISTATUS) {
+            break;
+        }
+    }
+
+    // Disable counting
+    CNTP_CTL_EL0.modify(CNTP_CTL_EL0::ENABLE::CLEAR);
+}
+
 #[inline(always)]
+/// Loop forever (Trap state)
 pub fn wait_forever() -> ! {
     loop {
         asm::wfe();

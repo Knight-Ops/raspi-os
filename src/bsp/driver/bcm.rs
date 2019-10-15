@@ -1,6 +1,7 @@
 // BCM SoC drivers
 
 mod bcm2835_rand;
+mod bcm2835_systimer;
 mod bcm2837_gpio;
 mod bcm2xxx_aux;
 mod bcm2xxx_mailbox;
@@ -8,6 +9,7 @@ mod bcm2xxx_mini_uart;
 mod bcm2xxx_uart;
 
 pub use bcm2835_rand::Rng;
+pub use bcm2835_systimer::SysTimer;
 pub use bcm2837_gpio::GPIO;
 pub use bcm2xxx_aux::AuxRegisters;
 pub use bcm2xxx_mailbox::Mail;

@@ -47,7 +47,7 @@ impl ops::Deref for RngInner {
 }
 
 impl RngInner {
-    pub const fn new(base_addr: usize) -> RngInner {
+    const fn new(base_addr: usize) -> RngInner {
         RngInner { base_addr }
     }
 

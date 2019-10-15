@@ -21,6 +21,7 @@ mod bsp;
 mod interface;
 mod panic_wait;
 mod print;
+mod utils;
 
 fn kernel_entry() -> ! {
     use interface::console::All;
@@ -52,9 +53,10 @@ fn kernel_entry() -> ! {
     println!("[4] Printing Random Numbers.");
     loop {
         println!("{}", bsp::rand(0, 1000));
-        for _ in (0..10000) {
-            arch::nop();
-        }
+        arch::wait_usec(1_000_000);
+
+        println!("{}", bsp::rand(0, 2));
+        bsp::wait_usec(1_000_000);
     }
 
     panic!("Stopping at end of kernel_entry");
