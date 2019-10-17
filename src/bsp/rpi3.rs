@@ -25,13 +25,16 @@ static RNG: driver::Rng = unsafe { driver::Rng::new(memory_map::mmio::RANDOM_BAS
 static MINI_UART: driver::MiniUart = unsafe { driver::MiniUart::new(memory_map::mmio::UART1_BASE) };
 static MBOX: driver::Mbox = unsafe { driver::Mbox::new(memory_map::mmio::MAILBOX_BASE) };
 static UART0: driver::Uart = unsafe { driver::Uart::new(memory_map::mmio::UART0_BASE) };
+static USB: driver::USB = unsafe { driver::USB::new(memory_map::mmio::USB_BASE) };
 
 ////////////////////////////////////////////////////////////////////////////////
 // Global BSP driver getters
 ////////////////////////////////////////////////////////////////////////////////
 
-pub fn device_drivers() -> [&'static dyn interface::driver::DeviceDriver; 7] {
-    [&GPIO, &SYSTIMER, &AUX_REGS, &RNG, &MINI_UART, &MBOX, &UART0]
+pub fn device_drivers() -> [&'static dyn interface::driver::DeviceDriver; 8] {
+    [
+        &GPIO, &SYSTIMER, &AUX_REGS, &RNG, &MINI_UART, &MBOX, &UART0, &USB,
+    ]
 }
 
 pub fn init() {

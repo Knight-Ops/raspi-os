@@ -45,18 +45,10 @@ fn kernel_entry() -> ! {
         bsp::console().chars_written()
     );
 
-    // println!("[4] Echoing input now.");
-    // loop {
-    //     let c = bsp::console().read_char();
-    //     bsp::console().write_char(c);
-    // }
-    println!("[4] Printing Random Numbers.");
+    println!("[4] Echoing input now.");
     loop {
-        println!("{}", bsp::rand(0, 1000));
-        arch::wait_usec(1_000_000);
-
-        println!("{}", bsp::rand(0, 2));
-        bsp::wait_usec(1_000_000);
+        let c = bsp::console().read_char();
+        bsp::console().write_char(c);
     }
 
     panic!("Stopping at end of kernel_entry");
